@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compound News Ticker — Meld Browser Source</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    font-family: "Arial Narrow", Arial, Helvetica, sans-serif;
+    background: transparent;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ============ TICKER VIEW ============ */
+  #tickerView { height:100%; display:flex; flex-direction:column; }
+  .ticker-shell {
+    flex:1;
+    display:flex;
+    align-items:stretch;
+    background: var(--bg, #0a0a0a);
+    border-top: 4px solid var(--accent, #f59e0b);
+    min-height: 56px;
+    position: relative;
+  }
+  body.transparent-bg .ticker-shell { background: transparent; }
+  .label-block {
+    flex: 0 0 auto;
+    display:flex;
+    align-items:center;
+    gap: 14px;
+    padding: 0 22px;
+    background: linear-gradient(180deg, #161616, #050505);
+    border-right: 4px solid var(--accent, #f59e0b);
+    z-index: 3;
+    white-space: nowrap;
+  }
+  .live-dot {
+    width: 13px; height: 13px; border-radius: 50%;
+    background: #e11d2e;
+    box-shadow: 0 0 10px #e11d2e;
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+  .live-tag {
+    color:#fff; background:#e11d2e; font-weight:800; letter-spacing:.14em;
+    font-size: calc(var(--font, 30px) * .52);
+    padding: 3px 9px; border-radius: 3px;
+  }
+  .label-text {
+    color: var(--accent, #f59e0b);
+    font-weight: 900; letter-spacing: .06em; text-transform: uppercase;
+    font-size: calc(var(--font, 30px) * .78);
+  }
+  .track-viewport {
+    flex:1; overflow:hidden; position:relative;
+    display:flex; align-items:center;
+    mask-image: linear-gradient(90deg, transparent 0, #000 26px, #000 calc(100% - 26px), transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 26px, #000 calc(100% - 26px), transparent 100%);
+  }
+  .track {
+    display:flex; white-space:nowrap; will-change: transform;
+    font-size: var(--font, 30px);
+    font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+    color: var(--fg, #ffffff);
+  }
+  .segment { display:flex; align-items:center; }
+  .segment .item { padding: 0 .55em; }
+  .segment .sep { color: var(--accent, #f59e0b); font-size: .62em; }
+  .clock-block {
+    flex: 0 0 auto; display:flex; align-items:center; padding: 0 20px;
+    color:#fff; background:#111; border-left: 1px solid #2a2a2a;
+    font-variant-numeric: tabular-nums; font-weight:800;
+    font-size: calc(var(--font, 30px) * .66); z-index:3;
+  }
+
+  /* hover controls inside the ticker (for setting up inside Meld) */
+  .ticker-tools {
+    position: fixed; top: 8px; right: 8px; z-index: 50;
+    display:flex; gap:6px; opacity:0; transition: opacity .2s;
+  }
+  #tickerView:hover .ticker-tools { opacity:1; }
+  .ticker-tools button, .ticker-tools a {
+    background: rgba(20,20,20,.92); color:#fff; border:1px solid var(--accent,#f59e0b);
+    font: 600 12px Arial, sans-serif; padding:6px 10px; border-radius:6px;
+    cursor:pointer; text-decoration:none;
+  }
+  .file-status {
+    position: fixed; left: 8px; bottom: 8px; z-index: 50;
+    background: rgba(20,20,20,.85); color:#9ae6a0; border:1px solid #2c5;
+    font: 600 11px Arial, sans-serif; padding:4px 8px; border-radius:6px;
+    opacity:0; transition: opacity .2s; pointer-events:none;
+  }
+  #tickerView:hover .file-status { opacity:1; }
+  .empty-hint {
+    color:#888; font-size: calc(var(--font, 30px) * .7); font-weight:700;
+    text-transform:uppercase; letter-spacing:.05em; padding-left: 24px;
+  }
+
+  /* ============ CONTROL VIEW ============ */
+  #controlView {
+    display:none; height:100%; overflow-y:auto; background:#0d0d0f; color:#eee;
+    font-family: Arial, Helvetica, sans-serif; padding: 22px;
+  }
+  #controlView.active { display:block; }
+  #tickerView.hidden { display:none; }
+  .ctl-wrap { max-width: 860px; margin: 0 auto; }
+  .ctl-wrap h1 { font-size: 22px; letter-spacing:.04em; }
+  .ctl-wrap h1 span { color:#f59e0b; }
+  .ctl-wrap p.sub { color:#9a9aa2; font-size:13px; margin: 6px 0 18px; line-height:1.5; }
+  .card { background:#151518; border:1px solid #26262b; border-radius:12px; padding:16px; margin-bottom:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.12em; color:#f59e0b; margin-bottom:12px; }
+  textarea {
+    width:100%; min-height:130px; background:#0a0a0c; color:#fff; border:1px solid #33333a;
+    border-radius:8px; padding:10px; font: 15px/1.55 Arial, sans-serif; resize:vertical;
+  }
+  .row { display:flex; flex-wrap:wrap; gap:14px; }
+  .field { flex:1 1 180px; display:flex; flex-direction:column; gap:6px; }
+  .field label { font-size:12px; color:#9a9aa2; text-transform:uppercase; letter-spacing:.08em; }
+  .field input[type="text"], .field input[type="number"] {
+    background:#0a0a0c; border:1px solid #33333a; color:#fff; border-radius:8px; padding:9px 10px; font-size:15px;
+  }
+  .field input[type="range"] { width:100%; accent-color:#f59e0b; }
+  .field input[type="color"] { width:56px; height:36px; background:none; border:none; cursor:pointer; }
+  .check { flex-direction:row; align-items:center; gap:8px; }
+  .check input { width:18px; height:18px; accent-color:#f59e0b; }
+  .btns { display:flex; flex-wrap:wrap; gap:10px; }
+  button.btn, a.btn {
+    background:#f59e0b; color:#111; border:none; font:700 14px Arial, sans-serif;
+    padding:10px 16px; border-radius:8px; cursor:pointer; text-decoration:none; display:inline-block;
+  }
+  button.btn.dark, a.btn.dark { background:#232329; color:#eee; border:1px solid #3a3a42; }
+  button.btn:disabled { opacity:.45; cursor:default; }
+  .status-line { font-size:13px; color:#9ae6a0; min-height:18px; margin-top:10px; }
+  .status-line.warn { color:#f5c15c; }
+  .preview-label { font-size:12px; color:#9a9aa2; text-transform:uppercase; letter-spacing:.1em; margin: 4px 0 8px; }
+  #previewShell { height:84px; border:1px solid #26262b; border-radius:8px; overflow:hidden; }
+  code.url {
+    display:block; background:#0a0a0c; border:1px solid #33333a; border-radius:8px;
+    padding:10px; font-size:12.5px; color:#9ae6a0; word-break:break-all; margin-top:10px;
+  }
+  .steps { font-size:13.5px; color:#c9c9cf; line-height:1.65; padding-left: 18px; }
+  .steps b { color:#fff; }
+</style>
+</head>
+<body>
+
+<!-- ================= TICKER (Meld browser source) ================= -->
+<div id="tickerView">
+  <div class="ticker-shell" id="tickerShell">
+    <div class="label-block" id="labelBlock">
+      <span class="live-dot" id="liveDot"></span>
+      <span class="live-tag" id="liveTag">LIVE</span>
+      <span class="label-text" id="labelText">THE COMPOUND</span>
+    </div>
+    <div class="track-viewport" id="viewport">
+      <div class="track" id="track"></div>
+    </div>
+    <div class="clock-block" id="clockBlock">--:--</div>
+  </div>
+  <div class="ticker-tools">
+    <button id="toolLink" type="button">Link .txt file (live)</button>
+    <button id="toolUpload" type="button">Upload .txt</button>
+    <a href="#/control">Control panel</a>
+  </div>
+  <div class="file-status" id="fileStatus">no file linked</div>
+  <input type="file" id="fileInput" accept=".txt,text/plain" hidden>
+</div>
+
+<!-- ================= CONTROL PANEL ================= -->
+<div id="controlView">
+  <div class="ctl-wrap">
+    <h1>COMPOUND <span>NEWS TICKER</span> — CONTROL</h1>
+    <p class="sub">One headline per line in the box (or in your .txt file). Link a .txt file once and the ticker
+      re-reads it every few seconds — edit the file, save it, and the scroll updates on its own, no re-upload.
+      Lines starting with # are ignored.</p>
+
+    <div class="card">
+      <h2>Headlines</h2>
+      <textarea id="linesInput" spellcheck="false"></textarea>
+      <div class="btns" style="margin-top:12px">
+        <button class="btn" id="ctlLink" type="button">Link .txt file (live)</button>
+        <button class="btn dark" id="ctlUpload" type="button">Upload .txt once</button>
+        <button class="btn dark" id="ctlDownload" type="button">Download ticker.txt</button>
+        <button class="btn dark" id="ctlApply" type="button">Apply text</button>
+      </div>
+      <div class="status-line" id="ctlStatus"></div>
+    </div>
+
+    <div class="card">
+      <h2>Look &amp; speed</h2>
+      <div class="row">
+        <div class="field"><label>Label text</label><input type="text" id="labelInput"></div>
+        <div class="field"><label>Live tag</label><input type="text" id="liveTagInput"></div>
+        <div class="field"><label>Separator</label><input type="text" id="sepInput" maxlength="5"></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div class="field"><label>Scroll speed — <span id="speedVal"></span> px/s</label>
+          <input type="range" id="speedInput" min="40" max="280" step="5"></div>
+        <div class="field"><label>Font size — <span id="fontVal"></span> px</label>
+          <input type="range" id="fontInput" min="18" max="54" step="1"></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div class="field"><label>Accent color</label><input type="color" id="accentInput"></div>
+        <div class="field"><label>Bar background</label><input type="color" id="bgInput"></div>
+        <div class="field"><label>Text color</label><input type="color" id="fgInput"></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div class="field check"><input type="checkbox" id="labelToggle"><label for="labelToggle">Show label block</label></div>
+        <div class="field check"><input type="checkbox" id="clockToggle"><label for="clockToggle">Show clock</label></div>
+        <div class="field check"><input type="checkbox" id="transparentToggle"><label for="transparentToggle">Transparent bar background</label></div>
+      </div>
+    </div>
+
+    <div class="preview-label">Preview</div>
+    <div id="previewShell"></div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>Put it in Meld Studio</h2>
+      <ol class="steps">
+        <li>Upload <b>index.html</b> to Netlify Drop (same as the death counter) — or open it from your PC.</li>
+        <li>In Meld: add a <b>Browser</b> layer, paste the ticker URL below, set it to <b>1920 × 90</b> and park it at the bottom of your scene.</li>
+        <li>Hover the ticker inside Meld and hit <b>Link .txt file (live)</b>, pick your ticker.txt once. After that just edit and save that file — the scroll updates itself.</li>
+      </ol>
+      <code class="url" id="tickerUrl"></code>
+      <div class="btns" style="margin-top:10px">
+        <button class="btn dark" id="copyUrl" type="button">Copy ticker URL</button>
+        <a class="btn" href="#/ticker">Open ticker</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ================= state (storage guarded: falls back to memory) ================= */
+const LS_KEY = 'compoundTickerV1';
+const store = (() => {
+  let mem = {};
+  try {
+    localStorage.setItem('__t', '1'); localStorage.removeItem('__t');
+    return {
+      get: k => localStorage.getItem(k),
+      set: (k, v) => localStorage.setItem(k, v)
+    };
+  } catch (e) {
+    return { get: k => (k in mem ? mem[k] : null), set: (k, v) => { mem[k] = v; } };
+  }
+})();
+
+const DEFAULTS = {
+  lines: [
+    'Welcome to The Compound',
+    'Like, comment and subscribe',
+    'New videos dropping every week',
+    'Join the membership for exclusive badges'
+  ],
+  label: 'THE COMPOUND',
+  liveTag: 'LIVE',
+  speed: 110,
+  fontSize: 30,
+  separator: '◆',
+  accent: '#f59e0b',
+  bg: '#0a0a0a',
+  fg: '#ffffff',
+  showLabel: true,
+  showClock: true,
+  transparent: false
+};
+let state = { ...DEFAULTS };
+try {
+  const saved = JSON.parse(store.get(LS_KEY) || 'null');
+  if (saved && typeof saved === 'object') state = { ...DEFAULTS, ...saved };
+} catch (e) { /* keep defaults */ }
+
+/* URL params override stored settings (handy for separate Meld layers) */
+const params = new URLSearchParams(location.search);
+if (params.get('label')) state.label = params.get('label');
+if (params.get('tag')) state.liveTag = params.get('tag');
+if (params.get('speed')) state.speed = Math.max(20, +params.get('speed') || state.speed);
+if (params.get('font')) state.fontSize = Math.max(12, +params.get('font') || state.fontSize);
+if (params.get('sep')) state.separator = params.get('sep');
+if (params.get('accent')) state.accent = params.get('accent');
+if (params.get('bg')) state.bg = params.get('bg');
+if (params.get('fg')) state.fg = params.get('fg');
+if (params.get('transparent') === '1') state.transparent = true;
+if (params.get('clock') === '0') state.showClock = false;
+if (params.get('labelblock') === '0') state.showLabel = false;
+
+const channel = ('BroadcastChannel' in window) ? new BroadcastChannel('compound-ticker') : null;
+function save(broadcast = true) {
+  try { store.set(LS_KEY, JSON.stringify(state)); } catch (e) {}
+  if (broadcast && channel) channel.postMessage({ type: 'state', state });
+}
+window.addEventListener('storage', e => {
+  if (e.key === LS_KEY && e.newValue) {
+    try { state = { ...DEFAULTS, ...JSON.parse(e.newValue) }; applyState(false); } catch (err) {}
+  }
+});
+if (channel) channel.onmessage = e => {
+  if (e.data && e.data.type === 'state') { state = { ...DEFAULTS, ...e.data.state }; applyState(false); }
+};
+
+/* ================= text parsing ================= */
+function parseText(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map(s => s.trim())
+    .filter(s => s && !s.startsWith('#'));
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* ================= file reading ================= */
+let fileHandle = null;
+let fileLastModified = 0;
+let fileName = '';
+let pollTimer = null;
+
+function setFileStatus(msg, warn = false) {
+  const el = document.getElementById('fileStatus');
+  if (el) { el.textContent = msg; el.style.color = warn ? '#f5c15c' : '#9ae6a0'; el.style.borderColor = warn ? '#a80' : '#2c5'; }
+  const ctl = document.getElementById('ctlStatus');
+  if (ctl) { ctl.textContent = msg; ctl.className = 'status-line' + (warn ? ' warn' : ''); }
+}
+
+function applyFileText(text, source) {
+  const lines = parseText(text);
+  if (!lines.length) { setFileStatus(source + ': file had no usable lines', true); return; }
+  state.lines = lines;
+  save();
+  applyState(false);
+  setFileStatus(source + ': ' + fileName + ' — ' + lines.length + ' headlines, updated ' + new Date().toLocaleTimeString());
+  const ta = document.getElementById('linesInput');
+  if (ta && document.activeElement !== ta) ta.value = lines.join('\n');
+}
+
+async function readHandleOnce() {
+  if (!fileHandle) return;
+  try {
+    const f = await fileHandle.getFile();
+    if (f.lastModified !== fileLastModified) {
+      fileLastModified = f.lastModified;
+      applyFileText(await f.text(), 'live file');
+    }
+  } catch (e) { setFileStatus('live file read failed — re-link the file', true); stopPolling(); }
+}
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(readHandleOnce, 2500);
+}
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+/* keep the file handle between reloads (IndexedDB) */
+const idb = {
+  open() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('compound-ticker-db', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('handles');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async set(k, v) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('handles', 'readwrite');
+      tx.objectStore('handles').put(v, k);
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+  },
+  async get(k) {
+    const db = await this.open();
+    return new Promise((res, rej) => {
+      const rq = db.transaction('handles').objectStore('handles').get(k);
+      rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+    });
+  }
+};
+
+async function linkFileLive() {
+  if (!window.showOpenFilePicker) {
+    setFileStatus('this browser cannot live-link files — use Upload .txt instead (Chrome/Edge/Meld can)', true);
+    return;
+  }
+  try {
+    const [handle] = await window.showOpenFilePicker({
+      types: [{ description: 'Text files', accept: { 'text/plain': ['.txt'] } }],
+      multiple: false
+    });
+    if (!handle) return;
+    fileHandle = handle;
+    fileName = handle.name;
+    fileLastModified = 0;
+    try { await idb.set('tickerFile', handle); } catch (e) {}
+    await readHandleOnce();
+    startPolling();
+  } catch (e) { /* user cancelled the picker */ }
+}
+
+async function restoreLinkedFile() {
+  try {
+    const handle = await idb.get('tickerFile');
+    if (!handle) return;
+    const perm = await handle.queryPermission({ mode: 'read' });
+    if (perm === 'granted') {
+      fileHandle = handle; fileName = handle.name; fileLastModified = 0;
+      await readHandleOnce(); startPolling();
+    } else {
+      setFileStatus('file was linked before (' + handle.name + ') — click Link .txt file once to re-allow it', true);
+    }
+  } catch (e) { /* no stored handle */ }
+}
+
+/* classic one-time upload */
+const fileInput = document.getElementById('fileInput');
+function uploadOnce() { fileInput.click(); }
+fileInput.addEventListener('change', async () => {
+  const f = fileInput.files && fileInput.files[0];
+  if (!f) return;
+  fileName = f.name;
+  applyFileText(await f.text(), 'uploaded');
+  fileInput.value = '';
+});
+
+/* hosted fallback: a ticker.txt sitting next to index.html */
+async function fetchNeighbourTxt() {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  try {
+    const r = await fetch('ticker.txt', { cache: 'no-store' });
+    if (!r.ok) return;
+    const text = await r.text();
+    if (parseText(text).length) { fileName = 'ticker.txt'; applyFileText(text, 'hosted file'); }
+  } catch (e) { /* nothing next door */ }
+}
+
+/* drag & drop a .txt anywhere on the ticker */
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', async e => {
+  e.preventDefault();
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) { fileName = f.name; applyFileText(await f.text(), 'dropped'); }
+});
+
+/* ================= ticker engine (seamless true-scroll) ================= */
+function createEngine(viewport, track) {
+  let segW = 1, offset = 0, last = 0, raf = null;
+  function segmentHTML() {
+    if (!state.lines.length) return '<span class="empty-hint">No headlines — link a .txt file or open the control panel</span>';
+    return state.lines.map(t =>
+      '<span class="item">' + escapeHtml(t) + '</span><span class="sep">' + escapeHtml(state.separator) + '</span>'
+    ).join('');
+  }
+  function rebuild(keepPhase = true) {
+    const phase = segW > 1 ? (Math.abs(offset) % segW) : 0;
+    const html = segmentHTML();
+    track.innerHTML = '';
+    const probe = document.createElement('div');
+    probe.className = 'segment'; probe.innerHTML = html; probe.style.visibility = 'hidden';
+    track.appendChild(probe);
+    segW = Math.max(1, probe.offsetWidth);
+    probe.remove();
+    const vw = viewport.clientWidth || 800;
+    const n = Math.max(3, Math.ceil(vw / segW) + 2);
+    for (let i = 0; i < n; i++) {
+      const s = document.createElement('div');
+      s.className = 'segment'; s.innerHTML = html;
+      track.appendChild(s);
+    }
+    offset = keepPhase ? -phase : 0;
+  }
+  function frame(ts) {
+    if (!last) last = ts;
+    const dt = Math.min(0.05, (ts - last) / 1000); last = ts;
+    offset -= state.speed * dt;
+    if (-offset >= segW) offset += segW;
+    track.style.transform = 'translate3d(' + offset + 'px,0,0)';
+    raf = requestAnimationFrame(frame);
+  }
+  return {
+    rebuild,
+    start() { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } },
+    stop() { if (raf) { cancelAnimationFrame(raf); raf = null; } }
+  };
+}
+
+const mainEngine = createEngine(document.getElementById('viewport'), document.getElementById('track'));
+let previewEngine = null;
+function buildPreview() {
+  const shell = document.getElementById('previewShell');
+  if (!shell || shell.dataset.built) return;
+  shell.dataset.built = '1';
+  shell.innerHTML =
+    '<div class="ticker-shell" style="height:100%">' +
+      '<div class="label-block"><span class="live-dot"></span>' +
+      '<span class="live-tag" data-pv="tag"></span><span class="label-text" data-pv="label"></span></div>' +
+      '<div class="track-viewport"><div class="track" data-pv="track"></div></div>' +
+    '</div>';
+  previewEngine = createEngine(
+    shell.querySelector('.track-viewport'),
+    shell.querySelector('[data-pv="track"]')
+  );
+}
+
+/* ================= apply state to the page ================= */
+function applyState(syncControls = true) {
+  const root = document.documentElement.style;
+  root.setProperty('--font', state.fontSize + 'px');
+  root.setProperty('--accent', state.accent);
+  root.setProperty('--bg', state.bg);
+  root.setProperty('--fg', state.fg);
+  document.body.classList.toggle('transparent-bg', !!state.transparent);
+
+  document.getElementById('labelText').textContent = state.label;
+  document.getElementById('liveTag').textContent = state.liveTag;
+  document.getElementById('labelBlock').style.display = state.showLabel ? 'flex' : 'none';
+  document.getElementById('clockBlock').style.display = state.showClock ? 'flex' : 'none';
+
+  const pvLabel = document.querySelector('[data-pv="label"]');
+  if (pvLabel) {
+    pvLabel.textContent = state.label;
+    document.querySelector('[data-pv="tag"]').textContent = state.liveTag;
+    pvLabel.closest('.label-block').style.display = state.showLabel ? 'flex' : 'none';
+  }
+
+  mainEngine.rebuild();
+  if (previewEngine) previewEngine.rebuild();
+
+  if (syncControls) syncControlInputs();
+}
+
+/* ================= control panel ================= */
+const $ = id => document.getElementById(id);
+function syncControlInputs() {
+  $('linesInput').value = state.lines.join('\n');
+  $('labelInput').value = state.label;
+  $('liveTagInput').value = state.liveTag;
+  $('sepInput').value = state.separator;
+  $('speedInput').value = state.speed; $('speedVal').textContent = state.speed;
+  $('fontInput').value = state.fontSize; $('fontVal').textContent = state.fontSize;
+  $('accentInput').value = state.accent;
+  $('bgInput').value = state.bg;
+  $('fgInput').value = state.fg;
+  $('labelToggle').checked = !!state.showLabel;
+  $('clockToggle').checked = !!state.showClock;
+  $('transparentToggle').checked = !!state.transparent;
+  $('tickerUrl').textContent = location.href.split('#')[0] + '#/ticker';
+}
+function wireControls() {
+  $('ctlLink').addEventListener('click', linkFileLive);
+  $('toolLink').addEventListener('click', linkFileLive);
+  $('ctlUpload').addEventListener('click', uploadOnce);
+  $('toolUpload').addEventListener('click', uploadOnce);
+  $('ctlApply').addEventListener('click', () => {
+    state.lines = parseText($('linesInput').value);
+    save(); applyState(false);
+    setFileStatus('text applied — ' + state.lines.length + ' headlines scrolling');
+  });
+  $('ctlDownload').addEventListener('click', () => {
+    const blob = new Blob([state.lines.join('\n') + '\n'], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'ticker.txt'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+  $('copyUrl').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('tickerUrl').textContent); setFileStatus('ticker URL copied'); }
+    catch (e) { setFileStatus('copy failed — select the URL text manually', true); }
+  });
+  const bind = (id, key, cast) => $(id).addEventListener('input', e => {
+    state[key] = cast ? cast(e.target.value) : e.target.value;
+    save(); applyState(false); syncLabelsOnly();
+  });
+  bind('labelInput', 'label'); bind('liveTagInput', 'liveTag'); bind('sepInput', 'separator');
+  bind('speedInput', 'speed', Number); bind('fontInput', 'fontSize', Number);
+  bind('accentInput', 'accent'); bind('bgInput', 'bg'); bind('fgInput', 'fg');
+  const bindCheck = (id, key) => $(id).addEventListener('change', e => {
+    state[key] = e.target.checked; save(); applyState(false);
+  });
+  bindCheck('labelToggle', 'showLabel'); bindCheck('clockToggle', 'showClock'); bindCheck('transparentToggle', 'transparent');
+}
+function syncLabelsOnly() {
+  $('speedVal').textContent = state.speed;
+  $('fontVal').textContent = state.fontSize;
+}
+
+/* ================= routing / clock / init ================= */
+function route() {
+  const control = location.hash.startsWith('#/control');
+  $('controlView').classList.toggle('active', control);
+  $('tickerView').classList.toggle('hidden', control);
+  if (control) {
+    buildPreview(); applyState(true);
+    mainEngine.stop(); if (previewEngine) previewEngine.start();
+  } else {
+    applyState(false);
+    if (previewEngine) previewEngine.stop();
+    mainEngine.start();
+  }
+}
+window.addEventListener('hashchange', route);
+window.addEventListener('resize', () => { mainEngine.rebuild(); if (previewEngine) previewEngine.rebuild(); });
+document.getElementById('tickerView').addEventListener('dblclick', () => { location.hash = '#/control'; });
+
+function tickClock() {
+  const el = document.getElementById('clockBlock');
+  if (el) el.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+setInterval(tickClock, 1000); tickClock();
+
+wireControls();
+route();
+restoreLinkedFile();
+setTimeout(() => { if (!fileHandle) fetchNeighbourTxt(); }, 1200);
+</script>
+</body>
+</html>

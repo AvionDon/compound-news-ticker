@@ -1,0 +1,8 @@
+# Compound News Ticker — one headline per line.
+# Lines starting with # are ignored. Edit this file, save it, and the ticker updates itself.
+Welcome to The Compound
+Like, comment and subscribe
+Hit the bell so you never miss a stream
+New videos dropping every week
+Join the membership for exclusive badges
+Follow Tha Avion Don on YouTube
