@@ -426,13 +426,19 @@ fileInput.addEventListener('change', async () => {
   fileInput.value = '';
 });
 
-/* hosted fallback: a ticker.txt sitting next to index.html */
+/* hosted fallback: a ticker.txt sitting next to index.html (e.g. GitHub Pages).
+   Re-checks every 60s, so editing that file updates the scroll on its own. */
+let hostedText = '';
+let hostedTimer = null;
 async function fetchNeighbourTxt() {
   if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
   try {
     const r = await fetch('ticker.txt', { cache: 'no-store' });
     if (!r.ok) return;
     const text = await r.text();
+    if (!hostedTimer) hostedTimer = setInterval(() => { if (!fileHandle) fetchNeighbourTxt(); }, 60000);
+    if (text === hostedText) return;
+    hostedText = text;
     if (parseText(text).length) { fileName = 'ticker.txt'; applyFileText(text, 'hosted file'); }
   } catch (e) { /* nothing next door */ }
 }
