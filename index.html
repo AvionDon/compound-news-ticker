@@ -177,6 +177,13 @@
       re-reads it every few seconds — edit the file, save it, and the scroll updates on its own, no re-upload.
       Lines starting with # are ignored.</p>
 
+    <div class="card" style="border-color:#f59e0b">
+      <h2>Push changes live</h2>
+      <p style="font-size:13px;color:#9a9aa2;line-height:1.5;margin-bottom:12px">Everything below only changes the preview while you edit. When you're ready, one click updates the live ticker with all of it at once.</p>
+      <button class="btn" id="ctlUpdate" type="button" style="font-size:16px;padding:13px 22px;width:100%">UPDATE TICKER</button>
+      <div class="status-line" id="updateStatus"></div>
+    </div>
+
     <div class="card">
       <h2>Headlines</h2>
       <textarea id="linesInput" spellcheck="false"></textarea>
@@ -184,7 +191,6 @@
         <button class="btn" id="ctlLink" type="button">Link .txt file (live)</button>
         <button class="btn dark" id="ctlUpload" type="button">Upload .txt once</button>
         <button class="btn dark" id="ctlDownload" type="button">Download ticker.txt</button>
-        <button class="btn dark" id="ctlApply" type="button">Apply text</button>
       </div>
       <div class="status-line" id="ctlStatus"></div>
     </div>
@@ -235,16 +241,13 @@
 
 <script>
 'use strict';
-/* ================= state (storage guarded: falls back to memory) ================= */
+/* ============ state: `state` is LIVE, `draft` is what's being edited ============ */
 const LS_KEY = 'compoundTickerV1';
 const store = (() => {
   let mem = {};
   try {
     localStorage.setItem('__t', '1'); localStorage.removeItem('__t');
-    return {
-      get: k => localStorage.getItem(k),
-      set: (k, v) => localStorage.setItem(k, v)
-    };
+    return { get: k => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) };
   } catch (e) {
     return { get: k => (k in mem ? mem[k] : null), set: (k, v) => { mem[k] = v; } };
   }
@@ -289,18 +292,25 @@ if (params.get('transparent') === '1') state.transparent = true;
 if (params.get('clock') === '0') state.showClock = false;
 if (params.get('labelblock') === '0') state.showLabel = false;
 
+let draft = { ...state, lines: [...state.lines] };
+
 const channel = ('BroadcastChannel' in window) ? new BroadcastChannel('compound-ticker') : null;
 function save(broadcast = true) {
   try { store.set(LS_KEY, JSON.stringify(state)); } catch (e) {}
   if (broadcast && channel) channel.postMessage({ type: 'state', state });
 }
+function onExternalState(newState) {
+  state = { ...DEFAULTS, ...newState };
+  draft = { ...state, lines: [...state.lines] };
+  applyLive(); renderPreview(); syncControlInputs();
+}
 window.addEventListener('storage', e => {
   if (e.key === LS_KEY && e.newValue) {
-    try { state = { ...DEFAULTS, ...JSON.parse(e.newValue) }; applyState(false); } catch (err) {}
+    try { onExternalState(JSON.parse(e.newValue)); } catch (err) {}
   }
 });
 if (channel) channel.onmessage = e => {
-  if (e.data && e.data.type === 'state') { state = { ...DEFAULTS, ...e.data.state }; applyState(false); }
+  if (e.data && e.data.type === 'state') onExternalState(e.data.state);
 };
 
 /* ================= text parsing ================= */
@@ -331,8 +341,9 @@ function applyFileText(text, source) {
   const lines = parseText(text);
   if (!lines.length) { setFileStatus(source + ': file had no usable lines', true); return; }
   state.lines = lines;
+  draft.lines = [...lines];
   save();
-  applyState(false);
+  applyLive(); renderPreview();
   setFileStatus(source + ': ' + fileName + ' — ' + lines.length + ' headlines, updated ' + new Date().toLocaleTimeString());
   const ta = document.getElementById('linesInput');
   if (ta && document.activeElement !== ta) ta.value = lines.join('\n');
@@ -348,13 +359,9 @@ async function readHandleOnce() {
     }
   } catch (e) { setFileStatus('live file read failed — re-link the file', true); stopPolling(); }
 }
-function startPolling() {
-  stopPolling();
-  pollTimer = setInterval(readHandleOnce, 2500);
-}
+function startPolling() { stopPolling(); pollTimer = setInterval(readHandleOnce, 2500); }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
-/* keep the file handle between reloads (IndexedDB) */
 const idb = {
   open() {
     return new Promise((res, rej) => {
@@ -415,7 +422,6 @@ async function restoreLinkedFile() {
   } catch (e) { /* no stored handle */ }
 }
 
-/* classic one-time upload */
 const fileInput = document.getElementById('fileInput');
 function uploadOnce() { fileInput.click(); }
 fileInput.addEventListener('change', async () => {
@@ -443,7 +449,6 @@ async function fetchNeighbourTxt() {
   } catch (e) { /* nothing next door */ }
 }
 
-/* drag & drop a .txt anywhere on the ticker */
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', async e => {
   e.preventDefault();
@@ -452,12 +457,13 @@ window.addEventListener('drop', async e => {
 });
 
 /* ================= ticker engine (seamless true-scroll) ================= */
-function createEngine(viewport, track) {
+function createEngine(viewport, track, srcFn) {
   let segW = 1, offset = 0, last = 0, raf = null;
   function segmentHTML() {
-    if (!state.lines.length) return '<span class="empty-hint">No headlines — link a .txt file or open the control panel</span>';
-    return state.lines.map(t =>
-      '<span class="item">' + escapeHtml(t) + '</span><span class="sep">' + escapeHtml(state.separator) + '</span>'
+    const s = srcFn();
+    if (!s.lines.length) return '<span class="empty-hint">No headlines — link a .txt file or open the control panel</span>';
+    return s.lines.map(t =>
+      '<span class="item">' + escapeHtml(t) + '</span><span class="sep">' + escapeHtml(s.separator) + '</span>'
     ).join('');
   }
   function rebuild(keepPhase = true) {
@@ -472,16 +478,16 @@ function createEngine(viewport, track) {
     const vw = viewport.clientWidth || 800;
     const n = Math.max(3, Math.ceil(vw / segW) + 2);
     for (let i = 0; i < n; i++) {
-      const s = document.createElement('div');
-      s.className = 'segment'; s.innerHTML = html;
-      track.appendChild(s);
+      const seg = document.createElement('div');
+      seg.className = 'segment'; seg.innerHTML = html;
+      track.appendChild(seg);
     }
     offset = keepPhase ? -phase : 0;
   }
   function frame(ts) {
     if (!last) last = ts;
     const dt = Math.min(0.05, (ts - last) / 1000); last = ts;
-    offset -= state.speed * dt;
+    offset -= srcFn().speed * dt;
     if (-offset >= segW) offset += segW;
     track.style.transform = 'translate3d(' + offset + 'px,0,0)';
     raf = requestAnimationFrame(frame);
@@ -493,7 +499,7 @@ function createEngine(viewport, track) {
   };
 }
 
-const mainEngine = createEngine(document.getElementById('viewport'), document.getElementById('track'));
+const mainEngine = createEngine(document.getElementById('viewport'), document.getElementById('track'), () => state);
 let previewEngine = null;
 function buildPreview() {
   const shell = document.getElementById('previewShell');
@@ -507,52 +513,55 @@ function buildPreview() {
     '</div>';
   previewEngine = createEngine(
     shell.querySelector('.track-viewport'),
-    shell.querySelector('[data-pv="track"]')
+    shell.querySelector('[data-pv="track"]'),
+    () => draft
   );
 }
 
-/* ================= apply state to the page ================= */
-function applyState(syncControls = true) {
+/* ================= rendering ================= */
+function applyVars(s) {
   const root = document.documentElement.style;
-  root.setProperty('--font', state.fontSize + 'px');
-  root.setProperty('--accent', state.accent);
-  root.setProperty('--bg', state.bg);
-  root.setProperty('--fg', state.fg);
-  document.body.classList.toggle('transparent-bg', !!state.transparent);
-
+  root.setProperty('--font', s.fontSize + 'px');
+  root.setProperty('--accent', s.accent);
+  root.setProperty('--bg', s.bg);
+  root.setProperty('--fg', s.fg);
+  document.body.classList.toggle('transparent-bg', !!s.transparent);
+}
+function applyLive() {
+  applyVars(state);
   document.getElementById('labelText').textContent = state.label;
   document.getElementById('liveTag').textContent = state.liveTag;
   document.getElementById('labelBlock').style.display = state.showLabel ? 'flex' : 'none';
   document.getElementById('clockBlock').style.display = state.showClock ? 'flex' : 'none';
-
+  mainEngine.rebuild();
+}
+function renderPreview() {
+  if (!previewEngine) return;
+  applyVars(draft);
   const pvLabel = document.querySelector('[data-pv="label"]');
   if (pvLabel) {
-    pvLabel.textContent = state.label;
-    document.querySelector('[data-pv="tag"]').textContent = state.liveTag;
-    pvLabel.closest('.label-block').style.display = state.showLabel ? 'flex' : 'none';
+    pvLabel.textContent = draft.label;
+    document.querySelector('[data-pv="tag"]').textContent = draft.liveTag;
+    pvLabel.closest('.label-block').style.display = draft.showLabel ? 'flex' : 'none';
   }
-
-  mainEngine.rebuild();
-  if (previewEngine) previewEngine.rebuild();
-
-  if (syncControls) syncControlInputs();
+  previewEngine.rebuild();
 }
 
 /* ================= control panel ================= */
 const $ = id => document.getElementById(id);
 function syncControlInputs() {
-  $('linesInput').value = state.lines.join('\n');
-  $('labelInput').value = state.label;
-  $('liveTagInput').value = state.liveTag;
-  $('sepInput').value = state.separator;
-  $('speedInput').value = state.speed; $('speedVal').textContent = state.speed;
-  $('fontInput').value = state.fontSize; $('fontVal').textContent = state.fontSize;
-  $('accentInput').value = state.accent;
-  $('bgInput').value = state.bg;
-  $('fgInput').value = state.fg;
-  $('labelToggle').checked = !!state.showLabel;
-  $('clockToggle').checked = !!state.showClock;
-  $('transparentToggle').checked = !!state.transparent;
+  $('linesInput').value = draft.lines.join('\n');
+  $('labelInput').value = draft.label;
+  $('liveTagInput').value = draft.liveTag;
+  $('sepInput').value = draft.separator;
+  $('speedInput').value = draft.speed; $('speedVal').textContent = draft.speed;
+  $('fontInput').value = draft.fontSize; $('fontVal').textContent = draft.fontSize;
+  $('accentInput').value = draft.accent;
+  $('bgInput').value = draft.bg;
+  $('fgInput').value = draft.fg;
+  $('labelToggle').checked = !!draft.showLabel;
+  $('clockToggle').checked = !!draft.showClock;
+  $('transparentToggle').checked = !!draft.transparent;
   $('tickerUrl').textContent = location.href.split('#')[0] + '#/ticker';
 }
 function wireControls() {
@@ -560,13 +569,22 @@ function wireControls() {
   $('toolLink').addEventListener('click', linkFileLive);
   $('ctlUpload').addEventListener('click', uploadOnce);
   $('toolUpload').addEventListener('click', uploadOnce);
-  $('ctlApply').addEventListener('click', () => {
-    state.lines = parseText($('linesInput').value);
-    save(); applyState(false);
-    setFileStatus('text applied — ' + state.lines.length + ' headlines scrolling');
+
+  /* THE update button: commits every staged change to the live ticker at once */
+  $('ctlUpdate').addEventListener('click', () => {
+    draft.lines = parseText($('linesInput').value);
+    state = { ...draft, lines: [...draft.lines] };
+    save();
+    applyLive();
+    renderPreview();
+    const msg = 'ticker updated — all changes live at ' + new Date().toLocaleTimeString();
+    $('updateStatus').textContent = msg;
+    setFileStatus(msg);
   });
+
   $('ctlDownload').addEventListener('click', () => {
-    const blob = new Blob([state.lines.join('\n') + '\n'], { type: 'text/plain' });
+    const lines = parseText($('linesInput').value);
+    const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = 'ticker.txt'; a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
@@ -575,21 +593,25 @@ function wireControls() {
     try { await navigator.clipboard.writeText($('tickerUrl').textContent); setFileStatus('ticker URL copied'); }
     catch (e) { setFileStatus('copy failed — select the URL text manually', true); }
   });
+
+  /* staging: edits touch the draft + preview only, never the live ticker */
+  $('linesInput').addEventListener('input', e => {
+    draft.lines = parseText(e.target.value);
+    renderPreview();
+  });
   const bind = (id, key, cast) => $(id).addEventListener('input', e => {
-    state[key] = cast ? cast(e.target.value) : e.target.value;
-    save(); applyState(false); syncLabelsOnly();
+    draft[key] = cast ? cast(e.target.value) : e.target.value;
+    $('speedVal').textContent = draft.speed;
+    $('fontVal').textContent = draft.fontSize;
+    renderPreview();
   });
   bind('labelInput', 'label'); bind('liveTagInput', 'liveTag'); bind('sepInput', 'separator');
   bind('speedInput', 'speed', Number); bind('fontInput', 'fontSize', Number);
   bind('accentInput', 'accent'); bind('bgInput', 'bg'); bind('fgInput', 'fg');
   const bindCheck = (id, key) => $(id).addEventListener('change', e => {
-    state[key] = e.target.checked; save(); applyState(false);
+    draft[key] = e.target.checked; renderPreview();
   });
   bindCheck('labelToggle', 'showLabel'); bindCheck('clockToggle', 'showClock'); bindCheck('transparentToggle', 'transparent');
-}
-function syncLabelsOnly() {
-  $('speedVal').textContent = state.speed;
-  $('fontVal').textContent = state.fontSize;
 }
 
 /* ================= routing / clock / init ================= */
@@ -598,10 +620,13 @@ function route() {
   $('controlView').classList.toggle('active', control);
   $('tickerView').classList.toggle('hidden', control);
   if (control) {
-    buildPreview(); applyState(true);
+    draft = { ...state, lines: [...state.lines] };
+    buildPreview();
+    syncControlInputs();
+    renderPreview();
     mainEngine.stop(); if (previewEngine) previewEngine.start();
   } else {
-    applyState(false);
+    applyLive();
     if (previewEngine) previewEngine.stop();
     mainEngine.start();
   }
@@ -620,6 +645,7 @@ wireControls();
 route();
 restoreLinkedFile();
 setTimeout(() => { if (!fileHandle) fetchNeighbourTxt(); }, 1200);
+
 </script>
 </body>
 </html>
