@@ -179,7 +179,7 @@
 
     <div class="card" style="border-color:#f59e0b">
       <h2>Push changes live</h2>
-      <p style="font-size:13px;color:#9a9aa2;line-height:1.5;margin-bottom:12px">Everything below only changes the preview while you edit. When you're ready, one click updates the live ticker with all of it at once.</p>
+      <p style="font-size:13px;color:#9a9aa2;line-height:1.5;margin-bottom:12px">Everything below only changes the preview while you edit. When you're ready, one click updates the live ticker everywhere at once — meld included, no github commit needed.</p>
       <button class="btn" id="ctlUpdate" type="button" style="font-size:16px;padding:13px 22px;width:100%">UPDATE TICKER</button>
       <div class="status-line" id="updateStatus"></div>
     </div>
@@ -313,6 +313,37 @@ if (channel) channel.onmessage = e => {
   if (e.data && e.data.type === 'state') onExternalState(e.data.state);
 };
 
+/* ============ cloud sync: panel pushes once, every ticker copy polls ============ */
+const CLOUD_URL = 'https://extendsclass.com/api/json-storage/bin/efcaece';
+let lastCloudJSON = '';
+async function cloudPush() {
+  try {
+    const body = JSON.stringify(state);
+    const r = await fetch(CLOUD_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      body
+    });
+    if (r.ok) lastCloudJSON = body;
+    return r.ok;
+  } catch (e) { return false; }
+}
+async function cloudPoll() {
+  if (fileHandle) return; /* a locally linked file wins over the cloud */
+  try {
+    const r = await fetch(CLOUD_URL, { cache: 'no-store' });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data || !Array.isArray(data.lines) || !data.lines.length) return;
+    const str = JSON.stringify(data);
+    if (str === lastCloudJSON) return;
+    lastCloudJSON = str;
+    onExternalState(data);
+    save(false);
+  } catch (e) { /* offline — keep current headlines */ }
+}
+setInterval(cloudPoll, 5000);
+
 /* ================= text parsing ================= */
 function parseText(text) {
   return String(text || '')
@@ -337,13 +368,14 @@ function setFileStatus(msg, warn = false) {
   if (ctl) { ctl.textContent = msg; ctl.className = 'status-line' + (warn ? ' warn' : ''); }
 }
 
-function applyFileText(text, source) {
+function applyFileText(text, source, pushCloud = false) {
   const lines = parseText(text);
   if (!lines.length) { setFileStatus(source + ': file had no usable lines', true); return; }
   state.lines = lines;
   draft.lines = [...lines];
   save();
   applyLive(); renderPreview();
+  if (pushCloud) cloudPush();
   setFileStatus(source + ': ' + fileName + ' — ' + lines.length + ' headlines, updated ' + new Date().toLocaleTimeString());
   const ta = document.getElementById('linesInput');
   if (ta && document.activeElement !== ta) ta.value = lines.join('\n');
@@ -355,7 +387,7 @@ async function readHandleOnce() {
     const f = await fileHandle.getFile();
     if (f.lastModified !== fileLastModified) {
       fileLastModified = f.lastModified;
-      applyFileText(await f.text(), 'live file');
+      applyFileText(await f.text(), 'live file', true);
     }
   } catch (e) { setFileStatus('live file read failed — re-link the file', true); stopPolling(); }
 }
@@ -428,7 +460,7 @@ fileInput.addEventListener('change', async () => {
   const f = fileInput.files && fileInput.files[0];
   if (!f) return;
   fileName = f.name;
-  applyFileText(await f.text(), 'uploaded');
+  applyFileText(await f.text(), 'uploaded', true);
   fileInput.value = '';
 });
 
@@ -453,7 +485,7 @@ window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('drop', async e => {
   e.preventDefault();
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) { fileName = f.name; applyFileText(await f.text(), 'dropped'); }
+  if (f) { fileName = f.name; applyFileText(await f.text(), 'dropped', true); }
 });
 
 /* ================= ticker engine (seamless true-scroll) ================= */
@@ -570,16 +602,21 @@ function wireControls() {
   $('ctlUpload').addEventListener('click', uploadOnce);
   $('toolUpload').addEventListener('click', uploadOnce);
 
-  /* THE update button: commits every staged change to the live ticker at once */
-  $('ctlUpdate').addEventListener('click', () => {
+  /* THE update button: commits every staged change to the live ticker at once,
+     and pushes it to the cloud so the Meld copy picks it up within seconds */
+  $('ctlUpdate').addEventListener('click', async () => {
     draft.lines = parseText($('linesInput').value);
     state = { ...draft, lines: [...draft.lines] };
     save();
     applyLive();
     renderPreview();
-    const msg = 'ticker updated — all changes live at ' + new Date().toLocaleTimeString();
+    $('updateStatus').textContent = 'pushing to the live ticker…';
+    const ok = await cloudPush();
+    const msg = ok
+      ? 'ticker updated — live everywhere, meld picks it up within ~10 seconds'
+      : 'updated in this browser, but the cloud push failed — meld will not see it yet, try again';
     $('updateStatus').textContent = msg;
-    setFileStatus(msg);
+    setFileStatus(msg, !ok);
   });
 
   $('ctlDownload').addEventListener('click', () => {
